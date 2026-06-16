@@ -97,7 +97,25 @@ export class RpcProvider {
     return BigInt(hex);
   }
 
-  getChainId(): number {
-    return this.chainId;
-  }
-}
+import { withRetry, RetryOptions } from "../utils/retry";
+-
++import { simulateTransactionRequest, SimulationResult } from "../utils/simulation";
++
+ export interface JsonRpcRequest {
+   jsonrpc: "2.0";
+   id: number;
+@@ -103,0 +105,25 @@
++  async simulate(tx: any): Promise<SimulationResult> {
++    const result = await this.call("eth_call", [{
++      to: tx.to,
++      data: tx.data,
++      value: tx.value,
++      from: tx.from
++    }, "latest"]);
++    
++    return {
++      success: true,
++      result: result
++    };
++  }
++}
