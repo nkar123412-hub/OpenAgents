@@ -1,28 +1,43 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "@openzeppelin/contracts/ randomness/VRFConsumerBaseV2Plus.sol";
+
 /// @title RandomLottery
-/// @notice On-chain lottery using block.prevrandao for randomness
-/// @dev Players buy tickets, and a random winner is selected after the round ends
-contract RandomLottery {
+/// @notice On-chain lottery using Chainlink VRF for secure randomness
+/// @dev Players buy tickets, and a random winner is selected using VRF
+/// @contributor Hermes Agent
+/// @platform-config Strictly Russian, autonomy mode, max efficiency, no failures.
+/// @env Linux, x86_64, /home/Artur, /home/Artur/OpenAgents, bash
+/// @timestamp 2026-06-16
+contract RandomLottery is VRFConsumerBaseV2Plus {
     address public owner;
     uint256 public ticketPrice;
     uint256 public roundEnd;
     uint256 public currentRound;
+    uint256 public lastDrawTimestamp;
+    uint256 public constant DRAW_COOLDOWN = 1 hours;
 
     address[] public players;
     mapping(uint256 => address) public roundWinners;
+    mapping(address => bool) public unclaimedPrizes;
+    mapping(uint256 => uint256) public roundPrizes;
 
     event TicketPurchased(address indexed player, uint256 round);
     event RoundStarted(uint256 indexed round, uint256 endTime);
     event WinnerSelected(address indexed winner, uint256 prize, uint256 round);
+    event RequestSent(uint256 requestId, uint256 round);
+    event PrizeClaimed(address indexed winner, uint256 prize, uint256 round);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Not owner");
         _;
     }
 
-    constructor(uint256 _ticketPrice) {
+    constructor(
+        uint256 _ticketPrice,
+        address vrfCoordinator
+    ) VRFConsumerBaseV2Plus(vrfCoordinator) {
         owner = msg.sender;
         ticketPrice = _ticketPrice;
     }
@@ -42,29 +57,49 @@ contract RandomLottery {
         emit TicketPurchased(msg.sender, currentRound);
     }
 
-    function drawWinner() external onlyOwner {
+    function requestWinner() external onlyOwner {
         require(block.timestamp >= roundEnd, "Round not ended");
+        require(players.length >= 3, "Min 3 participants required");
+        require(block.timestamp >= lastDrawTimestamp + DRAW_COOLDOWN, "Draw cooldown active");
 
-        // BUG: prevrandao is manipulable by validators — validators can influence
-        // the randomness value, making the lottery outcome predictable/riggable
-        uint256 randomIndex = uint256(
-            keccak256(abi.encodePacked(block.prevrandao, block.timestamp))
-        ) % players.length;
+        uint256 requestId = this.requestRandomWords(
+            uint256(1), // 1 request
+            3,           // 3 confirmations
+            100000      // callback gas limit
+        );
+        
+        emit RequestSent(requestId, currentRound);
+    }
 
-        // BUG: No minimum participants check — if only 1 player entered,
-        // the lottery is pointless and the single player always wins their own funds minus gas
+    function fulfillRandomWords(
+        uint256 requestId,
+        uint256[] memory randomWords
+    ) internal override {
+        uint256 randomIndex = randomWords[0] % players.length;
         address winner = players[randomIndex];
-        roundWinners[currentRound] = winner;
-
+        
         uint256 prize = address(this).balance;
+        roundWinners[currentRound] = winner;
+        roundPrizes[currentRound] = prize;
+        unclaimedPrizes[winner] = true;
+
+        lastDrawTimestamp = block.timestamp;
         roundEnd = 0;
 
-        // BUG: Winner can be a contract that rejects ETH (no receive/fallback),
-        // causing this call to revert and locking all funds permanently
-        (bool sent, ) = winner.call{value: prize}("");
+        emit WinnerSelected(winner, prize, currentRound);
+    }
+
+    function claimPrize(uint256 round) external {
+        require(roundWinners[round] == msg.sender, "Not the winner of this round");
+        require(unclaimedPrizes[msg.sender], "Prize already claimed");
+
+        uint256 prize = roundPrizes[round];
+        unclaimedPrizes[msg.sender] = false;
+        
+        (bool sent, ) = msg.sender.call{value: prize}("");
         require(sent, "Transfer failed");
 
-        emit WinnerSelected(winner, prize, currentRound);
+        emit PrizeClaimed(msg.sender, prize, round);
     }
 
     function getPlayers() external view returns (address[] memory) {
@@ -75,3 +110,4 @@ contract RandomLottery {
         return address(this).balance;
     }
 }
+
