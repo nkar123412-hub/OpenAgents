@@ -1,7 +1,9 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Any
 from datetime import datetime
+import uuid
 
 app = FastAPI(
     title="OpenAgents API",
@@ -9,6 +11,11 @@ app = FastAPI(
     version="0.1.0",
 )
 
+class APIErrorResponse(BaseModel):
+    code: str
+    message: str
+    details: Optional[dict[str, Any]] = None
+    request_id: str
 
 class AgentResponse(BaseModel):
     agent_id: str
@@ -20,7 +27,6 @@ class AgentResponse(BaseModel):
     registered_at: datetime
     active: bool
 
-
 class TaskResponse(BaseModel):
     task_id: int
     creator: str
@@ -30,7 +36,6 @@ class TaskResponse(BaseModel):
     status: str
     assigned_agent: Optional[str] = None
 
-
 class LeaderboardEntry(BaseModel):
     agent_id: str
     name: str
@@ -38,11 +43,20 @@ class LeaderboardEntry(BaseModel):
     tasks_completed: int
     success_rate: float
 
-
 # In-memory store (placeholder for DB)
 agents_cache: dict = {}
 tasks_cache: dict = {}
 
+async def create_error_response(status_code: int, code: str, message: str, details: Optional[dict] = None):
+    return JSONResponse(
+        status_code=status_code,
+        content=APIErrorResponse(
+            code=code,
+            message=message,
+            details=details,
+            request_id=str(uuid.uuid4())
+        ).model_dump()
+    )
 
 @app.get("/agents", response_model=list[AgentResponse])
 async def list_agents(
@@ -57,13 +71,11 @@ async def list_agents(
     results = [a for a in results if a.get("reputation", 0) >= min_reputation]
     return results[offset : offset + limit]
 
-
 @app.get("/agents/{agent_id}", response_model=AgentResponse)
 async def get_agent(agent_id: str):
     if agent_id not in agents_cache:
-        raise HTTPException(status_code=404, detail="Agent not found")
+        return await create_error_response(404, "NOT_FOUND", "Agent not found", {"agent_id": agent_id})
     return agents_cache[agent_id]
-
 
 @app.get("/tasks", response_model=list[TaskResponse])
 async def list_tasks(
@@ -76,13 +88,11 @@ async def list_tasks(
         results = [t for t in results if t.get("status") == status]
     return results[offset : offset + limit]
 
-
 @app.get("/tasks/{task_id}", response_model=TaskResponse)
 async def get_task(task_id: int):
     if task_id not in tasks_cache:
-        raise HTTPException(status_code=404, detail="Task not found")
+        return await create_error_response(404, "NOT_FOUND", "Task not found", {"task_id": task_id})
     return tasks_cache[task_id]
-
 
 @app.get("/leaderboard", response_model=list[LeaderboardEntry])
 async def leaderboard(limit: int = Query(20, le=50)):
@@ -100,7 +110,6 @@ async def leaderboard(limit: int = Query(20, le=50)):
         )
     entries.sort(key=lambda x: x["reputation"], reverse=True)
     return entries[:limit]
-
 
 @app.get("/health")
 async def health():
